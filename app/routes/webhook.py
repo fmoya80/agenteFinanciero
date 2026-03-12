@@ -33,27 +33,49 @@ async def webhook(request: Request):
 
     data = await request.json()
 
-    try:
-        mensaje = data["entry"][0]["changes"][0]["value"]["messages"][0]["text"]["body"]
-        telefono = data["entry"][0]["changes"][0]["value"]["messages"][0]["from"]
+    print("Webhook recibido:", data)
 
-    except:
-        return {"status": "no message"}
+    try:
+        value = data["entry"][0]["changes"][0]["value"]
+
+        # Si no es un mensaje, ignorar
+        if "messages" not in value:
+            return {"status": "evento ignorado"}
+
+        mensaje = value["messages"][0]["text"]["body"]
+        telefono = value["messages"][0]["from"]
+
+    except Exception as e:
+        print("Error leyendo mensaje:", e)
+        return {"status": "error parsing"}
 
     print("Mensaje recibido:", mensaje)
 
-    movimiento = interpretar_gasto(mensaje)
+    respuesta = interpretar_gasto(mensaje)
 
-    print("Movimiento interpretado:", movimiento)
+    print("Respuesta IA:", respuesta)
 
-    guardar_movimiento(movimiento)
+    if respuesta["accion"] == "preguntar":
+        enviar_respuesta(telefono, respuesta["pregunta"])
+        return {"status": "pregunta enviada"}
 
-    enviar_respuesta(telefono, movimiento)
+    if respuesta["accion"] == "registrar":
 
-    return {"status": "ok"}
+        guardar_movimiento(respuesta)
+
+        mensaje_confirmacion = f"""
+    ✅ Movimiento registrado
+
+    {respuesta["descripcion"]}
+    ${respuesta["monto"]}
+    """
+
+        enviar_respuesta(telefono, mensaje_confirmacion)
+
+        return {"status": "movimiento guardado"}
 
 
-def enviar_respuesta(telefono, movimiento):
+def enviar_respuesta(telefono, mensaje):
 
     url = f"https://graph.facebook.com/v18.0/{PHONE_ID}/messages"
 
@@ -61,8 +83,6 @@ def enviar_respuesta(telefono, movimiento):
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json"
     }
-
-    mensaje = f"✅ Movimiento guardado\n{movimiento['descripcion']} - ${movimiento['monto']}"
 
     payload = {
         "messaging_product": "whatsapp",
@@ -73,7 +93,4 @@ def enviar_respuesta(telefono, movimiento):
         }
     }
 
-    r = requests.post(url, headers=headers, json=payload)
-
-    print("WHATSAPP RESPONSE:", r.status_code)
-    print(r.text)
+    requests.post(url, headers=headers, json=payload)
