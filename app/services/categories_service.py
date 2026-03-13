@@ -3,6 +3,15 @@ from typing import Optional
 from app.database.supabase_client import supabase
 
 
+def _safe_log(label: str, value) -> None:
+    text = str(value)
+    try:
+        print(label, text)
+    except UnicodeEncodeError:
+        safe_text = text.encode("ascii", errors="backslashreplace").decode("ascii")
+        print(label, safe_text)
+
+
 def _normalizar_user_id(user_id: str) -> str:
     if user_id is None:
         raise ValueError("user_id es obligatorio.")
@@ -43,18 +52,19 @@ def create_category(user_id: str, nombre: str, descripcion: Optional[str] = None
         "nombre": nombre_valido,
         "descripcion": descripcion_limpia,
     }
-    print("create_category payload:", payload)
+    _safe_log("create_category payload:", payload)
 
     try:
         response = supabase.table("categorias").insert(payload).execute()
+        _safe_log("create_category response raw:", response)
         data = response.data or []
-        print("create_category response data:", data)
+        _safe_log("create_category response data:", data)
         if not data:
             print("create_category: insert sin filas retornadas")
             return None
         return data[0]
     except Exception as e:
-        print("create_category error:", e)
+        _safe_log("create_category error:", repr(e))
         raise
 
 

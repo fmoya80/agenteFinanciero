@@ -1,8 +1,18 @@
 from openai import OpenAI
 import os
 import json
+import traceback
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def _safe_log(label: str, value) -> None:
+    text = str(value)
+    try:
+        print(label, text)
+    except UnicodeEncodeError:
+        safe_text = text.encode("ascii", errors="backslashreplace").decode("ascii")
+        print(label, safe_text)
 
 
 def _prompt_parser(texto: str, categorias_usuario: list[dict]) -> str:
@@ -107,6 +117,7 @@ Mensaje del usuario:
 
 
 def interpretar_gasto(texto: str, categorias_usuario: list[dict] | None = None) -> dict:
+    _safe_log("[ai_parser] mensaje_original:", texto)
     categorias_normalizadas = []
     nombres_vistos = set()
     for cat in categorias_usuario or []:
@@ -124,20 +135,32 @@ def interpretar_gasto(texto: str, categorias_usuario: list[dict] | None = None) 
     if "otros" not in nombres_vistos:
         categorias_normalizadas.append({"nombre": "otros", "descripcion": "Categoria por defecto"})
 
-    response = client.chat.completions.create(
-        model="gpt-5-mini",
-        messages=[
-            {"role": "system", "content": "Eres un parser financiero estricto y devuelves solo JSON."},
-            {"role": "user", "content": _prompt_parser(texto, categorias_normalizadas)}
-        ],
-        temperature=0
-    )
+    prompt_final = _prompt_parser(texto, categorias_normalizadas)
+    print("[ai_parser] prompt_final_inicio")
+    _safe_log("[ai_parser] prompt_final:", prompt_final)
+    print("[ai_parser] prompt_final_fin")
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-5-mini",
+            messages=[
+                {"role": "system", "content": "Eres un parser financiero estricto y devuelves solo JSON."},
+                {"role": "user", "content": prompt_final}
+            ]
+        )
+    except Exception as e:
+        print("[ai_parser] fallback_condicion: excepcion_llamada_modelo")
+        print("[ai_parser] error_llamada_modelo:", repr(e))
+        traceback.print_exc()
+        raise
 
     contenido = response.choices[0].message.content or "{}"
+    _safe_log("[ai_parser] respuesta_cruda_modelo:", contenido)
 
     try:
         parsed = json.loads(contenido)
     except json.JSONDecodeError:
+        print("[ai_parser] fallback_condicion: json_decode_error")
         return {
             "intent": "mensaje_ambiguo",
             "should_save": False,
@@ -155,7 +178,7 @@ def interpretar_gasto(texto: str, categorias_usuario: list[dict] | None = None) 
             "categoria_nueva_descripcion": "",
         }
 
-    return {
+    parsed_normalizado = {
         "intent": parsed.get("intent", "mensaje_ambiguo"),
         "should_save": bool(parsed.get("should_save", False)),
         "needs_clarification": bool(parsed.get("needs_clarification", False)),
@@ -171,3 +194,5 @@ def interpretar_gasto(texto: str, categorias_usuario: list[dict] | None = None) 
         "categoria_nueva_nombre": (parsed.get("categoria_nueva_nombre") or "").strip(),
         "categoria_nueva_descripcion": (parsed.get("categoria_nueva_descripcion") or "").strip(),
     }
+    _safe_log("[ai_parser] json_parseado:", parsed_normalizado)
+    return parsed_normalizado

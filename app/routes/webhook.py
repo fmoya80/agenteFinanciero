@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Request
 import requests
 import os
+import traceback
+import time
 
 from app.services.ai_parser import interpretar_gasto
 from app.services.movimientos_service import (
@@ -24,6 +26,8 @@ router = APIRouter()
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_ID = os.getenv("PHONE_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
+PROCESSED_MESSAGE_TTL_SECONDS = 60 * 60 * 24
+_PROCESSED_MESSAGE_IDS: dict[str, float] = {}
 
 HELP_MESSAGE = (
     "Te puedo ayudar con tu control financiero:\n"
@@ -64,6 +68,31 @@ def _map_category_names(categorias_usuario: list[dict]) -> dict[str, str]:
     }
 
 
+def _prune_processed_messages() -> None:
+    now = time.time()
+    expired = [
+        message_id
+        for message_id, ts in _PROCESSED_MESSAGE_IDS.items()
+        if now - ts > PROCESSED_MESSAGE_TTL_SECONDS
+    ]
+    for message_id in expired:
+        _PROCESSED_MESSAGE_IDS.pop(message_id, None)
+
+
+def _is_duplicate_message(message_id: str) -> bool:
+    if not message_id:
+        return False
+    _prune_processed_messages()
+    return message_id in _PROCESSED_MESSAGE_IDS
+
+
+def _mark_message_processed(message_id: str) -> None:
+    if not message_id:
+        return
+    _prune_processed_messages()
+    _PROCESSED_MESSAGE_IDS[message_id] = time.time()
+
+
 @router.get("/webhook")
 async def verify_webhook(request: Request):
     params = request.query_params
@@ -91,6 +120,7 @@ async def webhook(request: Request):
         if msg.get("type") != "text":
             return {"status": "mensaje no-texto ignorado"}
 
+        message_id = (msg.get("id") or "").strip()
         mensaje = msg["text"]["body"]
         telefono = msg["from"]
         contactos = value.get("contacts", [])
@@ -100,6 +130,16 @@ async def webhook(request: Request):
     except Exception as e:
         print("Error leyendo mensaje:", e)
         return {"status": "error parsing webhook"}
+
+    print("[webhook] inbound_message:", {
+        "message_id": message_id,
+        "phone_number": telefono,
+        "body": mensaje
+    })
+
+    if _is_duplicate_message(message_id):
+        print("[webhook] mensaje duplicado detectado, ignorado:", message_id)
+        return {"status": "duplicado_ignorado"}
 
     print("Mensaje recibido:", mensaje)
 
@@ -111,14 +151,19 @@ async def webhook(request: Request):
         categorias_usuario = get_user_categories(user_id)
     except Exception as e:
         print("Error resolviendo usuario:", e)
-        enviar_respuesta(telefono, "No pude identificar tu usuario. Intenta nuevamente.")
+        _mark_message_processed(message_id)
+        enviar_respuesta(telefono, "No pude identificar tu usuario. Intenta nuevamente.", source_message_id=message_id)
         return {"status": "error user"}
 
     try:
         respuesta = interpretar_gasto(mensaje, categorias_usuario=categorias_usuario)
     except Exception as e:
+        print("[webhook] fallback_condicion: excepcion_en_interpretar_gasto")
+        print("[webhook] error_interpretando_mensaje:", repr(e))
+        traceback.print_exc()
         print("Error interpretando mensaje:", e)
-        enviar_respuesta(telefono, "No pude interpretar el mensaje. Escribe algo como: 'gasto 12000 en comida'.")
+        _mark_message_processed(message_id)
+        enviar_respuesta(telefono, "No pude interpretar el mensaje. Escribe algo como: 'gasto 12000 en comida'.", source_message_id=message_id)
         return {"status": "error parser"}
 
     print("Respuesta IA:", respuesta)
@@ -135,7 +180,8 @@ async def webhook(request: Request):
                 clarification_message
                 or "Para crear una categoria necesito nombre y descripcion. Ejemplo: 'crear categoria Transporte: uber, metro, bus'."
             )
-            enviar_respuesta(telefono, reply_text)
+            _mark_message_processed(message_id)
+            enviar_respuesta(telefono, reply_text, source_message_id=message_id)
             return {"status": "crear_categoria_falta_info"}
 
         try:
@@ -149,20 +195,40 @@ async def webhook(request: Request):
                         f"- Nombre: {categoria_creada.get('nombre')}\n"
                         f"- Descripcion: {categoria_creada.get('descripcion') or ''}"
                     ),
+                    source_message_id=message_id,
                 )
+                _mark_message_processed(message_id)
                 return {"status": "categoria_creada"}
 
             enviar_respuesta(
                 telefono,
-                "No pude confirmar la creacion de la categoria en Supabase. Intenta nuevamente."
+                "No pude confirmar la creacion de la categoria en Supabase. Intenta nuevamente.",
+                source_message_id=message_id,
             )
+            _mark_message_processed(message_id)
             return {"status": "categoria_no_confirmada"}
         except Exception as e:
             print("Error creando categoria:", e)
+            categoria_existente = find_user_category_by_name(user_id, nombre_categoria, categorias_usuario)
+            if categoria_existente:
+                print("Categoria detectada tras excepcion:", categoria_existente)
+                enviar_respuesta(
+                    telefono,
+                    (
+                        "Categoria creada correctamente:\n"
+                        f"- Nombre: {categoria_existente.get('nombre')}\n"
+                        f"- Descripcion: {categoria_existente.get('descripcion') or descripcion_categoria or ''}"
+                    ),
+                    source_message_id=message_id,
+                )
+                _mark_message_processed(message_id)
+                return {"status": "categoria_creada_post_error"}
             enviar_respuesta(
                 telefono,
-                "Hubo un problema al crear la categoria. Revisa si ya existe y vuelve a intentarlo."
+                "Hubo un problema al crear la categoria. Revisa si ya existe y vuelve a intentarlo.",
+                source_message_id=message_id,
             )
+            _mark_message_processed(message_id)
             return {"status": "error_crear_categoria"}
 
     if intent in {"consultar_movimientos", "consultar_o_pregunta"} and (respuesta.get("periodo") or "").strip():
@@ -182,8 +248,10 @@ async def webhook(request: Request):
         except ValueError:
             enviar_respuesta(
                 telefono,
-                clarification_message or "No reconoci ese periodo. Prueba con: hoy, esta_semana, este_mes o ultimos_7_dias."
+                clarification_message or "No reconoci ese periodo. Prueba con: hoy, esta_semana, este_mes o ultimos_7_dias.",
+                source_message_id=message_id,
             )
+            _mark_message_processed(message_id)
             return {"status": "consulta_periodo_invalido"}
 
         periodo_texto = period_label(periodo_normalizado)
@@ -194,7 +262,8 @@ async def webhook(request: Request):
                 grouped = [x for x in grouped if x.get("total", 0) > 0]
                 if not grouped:
                     noun = "gastos" if tipo_consulta == "gasto" else "ingresos"
-                    enviar_respuesta(telefono, f"No encontre {noun} registrados en {periodo_texto}.")
+                    _mark_message_processed(message_id)
+                    enviar_respuesta(telefono, f"No encontre {noun} registrados en {periodo_texto}.", source_message_id=message_id)
                     return {"status": "consulta_sin_resultados"}
 
                 names_map = _map_category_names(categorias_usuario)
@@ -210,7 +279,8 @@ async def webhook(request: Request):
                     total_txt = _format_clp(item.get("total", 0.0))
                     lines.append(f"- {cat_name}: ${total_txt} CLP")
 
-                enviar_respuesta(telefono, header + "\n".join(lines))
+                _mark_message_processed(message_id)
+                enviar_respuesta(telefono, header + "\n".join(lines), source_message_id=message_id)
                 return {"status": "consulta_desglose_ok"}
 
             if query_scope == "total_categoria":
@@ -225,7 +295,8 @@ async def webhook(request: Request):
                         f"No encontre la categoria '{categoria_consulta}' en tus categorias."
                         + (f" Puedes usar: {sugeridas}." if sugeridas else "")
                     )
-                    enviar_respuesta(telefono, msg)
+                    _mark_message_processed(message_id)
+                    enviar_respuesta(telefono, msg, source_message_id=message_id)
                     return {"status": "consulta_categoria_no_encontrada"}
 
                 total = sum_movimientos_by_period_and_category(
@@ -240,7 +311,9 @@ async def webhook(request: Request):
                     enviar_respuesta(
                         telefono,
                         f"No encontre {noun} en {categoria_obj.get('nombre')} durante {periodo_texto}.",
+                        source_message_id=message_id,
                     )
+                    _mark_message_processed(message_id)
                     return {"status": "consulta_sin_resultados"}
 
                 total_txt = _format_clp(total)
@@ -248,13 +321,15 @@ async def webhook(request: Request):
                     reply_text = f"Gastaste ${total_txt} CLP en {categoria_obj.get('nombre')} durante {periodo_texto}."
                 else:
                     reply_text = f"Recibiste ${total_txt} CLP en {categoria_obj.get('nombre')} durante {periodo_texto}."
-                enviar_respuesta(telefono, reply_text)
+                _mark_message_processed(message_id)
+                enviar_respuesta(telefono, reply_text, source_message_id=message_id)
                 return {"status": "consulta_categoria_ok"}
 
             total = sum_movimientos_by_period(user_id, tipo_consulta, fecha_inicio, fecha_fin)
             if total <= 0:
                 noun = "gastos" if tipo_consulta == "gasto" else "ingresos"
-                enviar_respuesta(telefono, f"No encontre {noun} registrados en {periodo_texto}.")
+                _mark_message_processed(message_id)
+                enviar_respuesta(telefono, f"No encontre {noun} registrados en {periodo_texto}.", source_message_id=message_id)
                 return {"status": "consulta_sin_resultados"}
 
             total_txt = _format_clp(total)
@@ -269,11 +344,13 @@ async def webhook(request: Request):
                 else:
                     reply_text = f"Recibiste ${total_txt} CLP en {periodo_texto}."
 
-            enviar_respuesta(telefono, reply_text)
+            _mark_message_processed(message_id)
+            enviar_respuesta(telefono, reply_text, source_message_id=message_id)
             return {"status": "consulta_ok"}
         except Exception as e:
             print("Error consultando movimientos por periodo:", e)
-            enviar_respuesta(telefono, "Hubo un problema al consultar tus movimientos. Intenta nuevamente.")
+            _mark_message_processed(message_id)
+            enviar_respuesta(telefono, "Hubo un problema al consultar tus movimientos. Intenta nuevamente.", source_message_id=message_id)
             return {"status": "error_consulta"}
 
     if not respuesta.get("should_save", False):
@@ -294,7 +371,8 @@ async def webhook(request: Request):
             reply_text = HELP_MESSAGE
             status = "no_registrable"
 
-        enviar_respuesta(telefono, reply_text)
+        _mark_message_processed(message_id)
+        enviar_respuesta(telefono, reply_text, source_message_id=message_id)
         return {"status": status}
 
     try:
@@ -306,11 +384,13 @@ async def webhook(request: Request):
         )
         _, movimiento_valido = guardar_movimiento(respuesta, user_id, categoria_resuelta)
     except ValueError as e:
-        enviar_respuesta(telefono, f"No pude registrar el movimiento: {str(e)}")
+        _mark_message_processed(message_id)
+        enviar_respuesta(telefono, f"No pude registrar el movimiento: {str(e)}", source_message_id=message_id)
         return {"status": "movimiento invalido"}
     except Exception as e:
         print("Error guardando movimiento:", e)
-        enviar_respuesta(telefono, "Hubo un problema al guardar en Supabase. Intenta nuevamente.")
+        _mark_message_processed(message_id)
+        enviar_respuesta(telefono, "Hubo un problema al guardar en Supabase. Intenta nuevamente.", source_message_id=message_id)
         return {"status": "error guardado"}
 
     mensaje_confirmacion = (
@@ -321,11 +401,17 @@ async def webhook(request: Request):
         f"Fecha: {movimiento_valido['fecha']}"
     )
 
-    enviar_respuesta(telefono, mensaje_confirmacion)
+    _mark_message_processed(message_id)
+    enviar_respuesta(telefono, mensaje_confirmacion, source_message_id=message_id)
     return {"status": "movimiento guardado"}
 
 
-def enviar_respuesta(telefono, mensaje):
+def enviar_respuesta(telefono, mensaje, source_message_id: str | None = None):
+    print("[webhook] send_whatsapp_message:", {
+        "source_message_id": source_message_id,
+        "phone_number": telefono,
+        "body": str(mensaje),
+    })
     url = f"https://graph.facebook.com/v18.0/{PHONE_ID}/messages"
 
     headers = {
