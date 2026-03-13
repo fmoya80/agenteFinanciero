@@ -125,7 +125,7 @@ def interpretar_gasto(texto: str, categorias_usuario: list[dict] | None = None) 
         categorias_normalizadas.append({"nombre": "otros", "descripcion": "Categoria por defecto"})
 
     response = client.chat.completions.create(
-        model="gpt-5.2",
+        model="gpt-5-mini",
         messages=[
             {"role": "system", "content": "Eres un parser financiero estricto y devuelves solo JSON."},
             {"role": "user", "content": _prompt_parser(texto, categorias_normalizadas)}
