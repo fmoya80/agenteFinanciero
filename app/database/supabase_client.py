@@ -4,13 +4,7 @@ import os
 url = os.getenv("SUPABASE_URL")
 key = os.getenv("SUPABASE_KEY")
 
-print("URL:", url)
-print("KEY:", key[:10] if key else None)
+if not url or not key:
+    raise RuntimeError("Faltan SUPABASE_URL o SUPABASE_KEY en variables de entorno.")
 
 supabase = create_client(url, key)
-
-try:
-    test = supabase.table("movimientos").select("*").limit(1).execute()
-    print("✅ Conexión a Supabase OK")
-except Exception as e:
-    print("❌ Error conectando a Supabase:", e)

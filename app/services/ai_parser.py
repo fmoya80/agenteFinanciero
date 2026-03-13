@@ -4,102 +4,170 @@ import json
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def interpretar_gasto(texto):
 
-    prompt = f"""
-    Eres un asistente financiero que registra movimientos de dinero en una base de datos.
-    Recuerda ser cordial y cada tanto enviar emojis.
+def _prompt_parser(texto: str, categorias_usuario: list[dict]) -> str:
+    if categorias_usuario:
+        categorias_texto = "\n".join(
+            [
+                f'- nombre: "{(cat.get("nombre") or "").strip()}" | descripcion: "{(cat.get("descripcion") or "").strip()}"'
+                for cat in categorias_usuario
+                if (cat.get("nombre") or "").strip()
+            ]
+        )
+    else:
+        categorias_texto = '- nombre: "otros" | descripcion: "Categoria por defecto"'
 
-    Tu tarea es analizar el mensaje del usuario y extraer información de un movimiento financiero.
+    return f"""
+Eres un parser de movimientos financieros para WhatsApp.
 
-    Campos necesarios para registrar un movimiento:
+Objetivo:
+- Determinar si un mensaje representa un movimiento registrable en Supabase.
+- Nunca registrar consultas, preguntas, saludos o mensajes ambiguos.
 
-    - tipo: ingreso o gasto
-    - descripcion
-    - monto
-    - categoria
-    - fecha
+Reglas obligatorias:
+1. Solo registrar si hay intencion clara de gasto o ingreso.
+2. Solo registrar si hay monto numerico explicito y mayor a 0.
+3. Nunca inventar monto, descripcion, tipo ni fecha.
+4. Si falta monto o es ambiguo, no registrar y pedir aclaracion.
+5. Si el mensaje es consulta/pregunta/conversacion, no registrar.
+6. Categoria debe elegirse desde las categorias del usuario cuando exista match.
+7. Usa nombre + descripcion de categorias para clasificar mejor.
+8. Si no hay match claro con categorias del usuario, usar "otros".
+9. No inventar categorias fuera de la lista entregada por el sistema.
+10. Si el usuario expresa intencion de crear una categoria nueva, usar intent "crear_categoria".
+11. Si falta nombre o descripcion para crear categoria, pedir aclaracion.
+12. Persistencia es en Supabase (no Google Sheets).
+13. Devuelve solo JSON valido.
+14. Si el usuario pregunta que puedes hacer, en que ayudas, como funcionas o que puede escribirte, usa intent "ayuda_capacidades" y responde con un mensaje claro y amigable.
+15. La respuesta de ayuda debe incluir: registrar gastos, registrar ingresos, consultar gastos por periodo, crear categorias personalizadas y organizar movimientos por categorias.
+16. Si el mensaje consulta totales en el tiempo, usar intent "consultar_movimientos" y detectar periodo + tipo.
+17. Periodos soportados para consultas: hoy, ayer, esta_semana, semana_pasada, este_mes, mes_pasado, ultimos_7_dias, ultimos_30_dias.
+18. Para consultas, tipo debe ser "gasto" o "ingreso" si se puede inferir.
+19. Distingue consultas:
+   - total_general: total por periodo sin categoria puntual.
+   - total_categoria: total por periodo filtrado por una categoria puntual.
+   - desglose_categorias: lista de categorias con sus totales para el periodo.
 
-    Reglas importantes:
+Categorias disponibles del usuario:
+{categorias_texto}
 
-    1. Si el usuario compra algo → gasto
-    2. Si el usuario recibe dinero → ingreso
-    3. Si no estás seguro del tipo → "duda"
-    4. NUNCA inventes un monto
-    5. Si falta el monto debes pedirlo al usuario
-    6. Si falta información crítica debes continuar la conversación
+Ejemplos que SI registran:
+- "compre sushi 12000"
+- "me pagaron 450000"
+- "uber 8500"
 
-    Comportamiento:
+Ejemplos que NO registran:
+- "cuanto gaste hoy"
+- "tengo gastos esta semana?"
+- "compre sushi"
+- "hola"
+- "anota algo"
+- "ayer gaste"
 
-    Si tienes toda la información → accion = "registrar"
+Devuelve SOLO JSON valido con este contrato exacto:
+{{
+  "intent": "registrar_gasto | registrar_ingreso | consultar_movimientos | consultar_o_pregunta | crear_categoria | ayuda_capacidades | mensaje_ambiguo | conversacional",
+  "should_save": false,
+  "needs_clarification": false,
+  "clarification_message": "",
+  "tipo": null,
+  "descripcion": "",
+  "monto": null,
+  "periodo": "",
+  "query_scope": "",
+  "categoria_consulta": "",
+  "categoria": "",
+  "fecha": null,
+  "categoria_nueva_nombre": "",
+  "categoria_nueva_descripcion": ""
+}}
 
-    Si falta información → accion = "preguntar"
+Reglas del contrato:
+- intent=registrar_gasto -> tipo="gasto"
+- intent=registrar_ingreso -> tipo="ingreso"
+- should_save=true solo si intent es registrar_* y monto>0 con descripcion no vacia
+- Si should_save=true, categoria debe ser una de las categorias disponibles del usuario o "otros"
+- intent=crear_categoria -> should_save=false (no registrar movimiento)
+- intent=crear_categoria y falta nombre o descripcion -> needs_clarification=true
+- intent=ayuda_capacidades -> should_save=false y clarification_message con capacidades y ejemplos
+- intent=consultar_movimientos -> should_save=false y debe incluir periodo; tipo preferido: gasto o ingreso
+- Si intent=consultar_movimientos:
+  - query_scope debe ser total_general | total_categoria | desglose_categorias
+  - en total_categoria debes completar categoria_consulta
+- Si should_save=false y falta monto/claridad -> needs_clarification=true con pregunta concreta
+- Si es consulta o conversacional -> needs_clarification=false y clarification_message puede sugerir que envies un gasto/ingreso con monto
 
-    Ejemplos:
+Siempre usa el emoji más ad hoc para la categoria.
+Recuerda usar emojis en algunos mensajes para ser mas cercano.
 
-    Usuario: "compre sushi 12000"
 
-    Respuesta:
-    {{
-    "accion": "registrar",
-    "tipo": "gasto",
-    "descripcion": "sushi",
-    "monto": 12000,
-    "categoria": "comida",
-    "fecha": "hoy",
-    "pregunta": ""
-    }}
+Mensaje del usuario:
+{texto}
+"""
 
-    Usuario: "compre sushi"
 
-    Respuesta:
-    {{
-    "accion": "preguntar",
-    "tipo": "gasto",
-    "descripcion": "sushi",
-    "monto": null,
-    "categoria": "comida",
-    "fecha": "hoy",
-    "pregunta": "¿Cuánto gastaste en sushi?"
-    }}
+def interpretar_gasto(texto: str, categorias_usuario: list[dict] | None = None) -> dict:
+    categorias_normalizadas = []
+    nombres_vistos = set()
+    for cat in categorias_usuario or []:
+        nombre = (cat.get("nombre") or "").strip()
+        if not nombre:
+            continue
+        key = nombre.lower()
+        if key in nombres_vistos:
+            continue
+        nombres_vistos.add(key)
+        categorias_normalizadas.append(
+            {"nombre": nombre, "descripcion": (cat.get("descripcion") or "").strip()}
+        )
 
-    Usuario: "me pagaron sueldo"
-
-    Respuesta:
-    {{
-    "accion": "preguntar",
-    "tipo": "ingreso",
-    "descripcion": "sueldo",
-    "monto": null,
-    "categoria": "sueldo",
-    "fecha": "hoy",
-    "pregunta": "¿Cuánto fue el sueldo que recibiste?"
-    }}
-
-    Mensaje del usuario:
-    {texto}
-
-    Responde SOLO en JSON válido con esta estructura:
-
-    {{
-    "accion": "",
-    "tipo": "",
-    "descripcion": "",
-    "monto": null,
-    "categoria": "",
-    "fecha": "",
-    "pregunta": ""
-    }}
-    """
+    if "otros" not in nombres_vistos:
+        categorias_normalizadas.append({"nombre": "otros", "descripcion": "Categoria por defecto"})
 
     response = client.chat.completions.create(
-        model="gpt-4.1-mini",
+        model="gpt-5.2",
         messages=[
-            {"role": "system", "content": "Eres un agente financiero."},
-            {"role": "user", "content": prompt}
-        ]
+            {"role": "system", "content": "Eres un parser financiero estricto y devuelves solo JSON."},
+            {"role": "user", "content": _prompt_parser(texto, categorias_normalizadas)}
+        ],
+        temperature=0
     )
 
-    contenido = response.choices[0].message.content
+    contenido = response.choices[0].message.content or "{}"
 
-    return json.loads(contenido)
+    try:
+        parsed = json.loads(contenido)
+    except json.JSONDecodeError:
+        return {
+            "intent": "mensaje_ambiguo",
+            "should_save": False,
+            "needs_clarification": True,
+            "clarification_message": "No pude interpretar el movimiento. Indica tipo y monto, por ejemplo: 'gasto 12000 en comida'.",
+            "tipo": None,
+            "descripcion": "",
+            "monto": None,
+            "periodo": "",
+            "query_scope": "",
+            "categoria_consulta": "",
+            "categoria": "otros",
+            "fecha": None,
+            "categoria_nueva_nombre": "",
+            "categoria_nueva_descripcion": "",
+        }
+
+    return {
+        "intent": parsed.get("intent", "mensaje_ambiguo"),
+        "should_save": bool(parsed.get("should_save", False)),
+        "needs_clarification": bool(parsed.get("needs_clarification", False)),
+        "clarification_message": parsed.get("clarification_message") or "",
+        "tipo": parsed.get("tipo"),
+        "descripcion": (parsed.get("descripcion") or "").strip(),
+        "monto": parsed.get("monto"),
+        "periodo": (parsed.get("periodo") or "").strip(),
+        "query_scope": (parsed.get("query_scope") or "").strip(),
+        "categoria_consulta": (parsed.get("categoria_consulta") or "").strip(),
+        "categoria": (parsed.get("categoria") or "otros").strip(),
+        "fecha": parsed.get("fecha"),
+        "categoria_nueva_nombre": (parsed.get("categoria_nueva_nombre") or "").strip(),
+        "categoria_nueva_descripcion": (parsed.get("categoria_nueva_descripcion") or "").strip(),
+    }

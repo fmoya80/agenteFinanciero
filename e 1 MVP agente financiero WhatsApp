@@ -1,0 +1,318 @@
+warning: in the working copy of 'app/database/supabase_client.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app/routes/webhook.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app/services/ai_parser.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app/services/movimientos_service.py', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/.gitignore b/.gitignore[m
+[1mindex c780f7d..6270a60 100644[m
+[1m--- a/.gitignore[m
+[1m+++ b/.gitignore[m
+[36m@@ -1,3 +1,9 @@[m
+[32m+[m[32m.venv/[m
+ __pycache__/[m
+ *.pyc[m
+[31m-.env[m
+\ No newline at end of file[m
+[32m+[m[32m.env[m
+[32m+[m[32m.env.*[m
+[32m+[m[32m!.env.example[m
+[32m+[m[32mdev_commands_local.md[m
+[32m+[m[32m.ngrok/[m
+[32m+[m[32m.vscode/[m
+\ No newline at end of file[m
+[1mdiff --git a/app/database/supabase_client.py b/app/database/supabase_client.py[m
+[1mindex 05639df..1fc693b 100644[m
+[1m--- a/app/database/supabase_client.py[m
+[1m+++ b/app/database/supabase_client.py[m
+[36m@@ -4,13 +4,7 @@[m [mimport os[m
+ url = os.getenv("SUPABASE_URL")[m
+ key = os.getenv("SUPABASE_KEY")[m
+ [m
+[31m-print("URL:", url)[m
+[31m-print("KEY:", key[:10] if key else None)[m
+[32m+[m[32mif not url or not key:[m
+[32m+[m[32m    raise RuntimeError("Faltan SUPABASE_URL o SUPABASE_KEY en variables de entorno.")[m
+ [m
+ supabase = create_client(url, key)[m
+[31m-[m
+[31m-try:[m
+[31m-    test = supabase.table("movimientos").select("*").limit(1).execute()[m
+[31m-    print("✅ Conexión a Supabase OK")[m
+[31m-except Exception as e:[m
+[31m-    print("❌ Error conectando a Supabase:", e)[m
+\ No newline at end of file[m
+[1mdiff --git a/app/routes/webhook.py b/app/routes/webhook.py[m
+[1mindex 0b2c63e..95d85cf 100644[m
+[1m--- a/app/routes/webhook.py[m
+[1m+++ b/app/routes/webhook.py[m
+[36m@@ -3,21 +3,70 @@[m [mimport requests[m
+ import os[m
+ [m
+ from app.services.ai_parser import interpretar_gasto[m
+[31m-from app.services.movimientos_service import guardar_movimiento[m
+[32m+[m[32mfrom app.services.movimientos_service import ([m
+[32m+[m[32m    guardar_movimiento,[m
+[32m+[m[32m    sum_movimientos_by_period,[m
+[32m+[m[32m    sum_movimientos_by_period_and_category,[m
+[32m+[m[32m    sum_movimientos_grouped_by_category,[m
+[32m+[m[32m)[m
+[32m+[m[32mfrom app.services.categories_service import ([m
+[32m+[m[32m    create_category,[m
+[32m+[m[32m    find_user_category_by_name,[m
+[32m+[m[32m    get_user_categories,[m
+[32m+[m[32m    get_or_create_default_category,[m
+[32m+[m[32m    resolve_category_for_user,[m
+[32m+[m[32m)[m
+[32m+[m[32mfrom app.services.periods_service import period_label, resolve_period_to_range[m
+[32m+[m[32mfrom app.services.users_service import get_or_create_user[m
+ [m
+ router = APIRouter()[m
+ [m
+ WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")[m
+ PHONE_ID = os.getenv("PHONE_ID")[m
+[31m-[m
+ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")[m
+ [m
+[32m+[m[32mHELP_MESSAGE = ([m
+[32m+[m[32m    "Te puedo ayudar con tu control financiero:\n"[m
+[32m+[m[32m    "1) Registrar gastos\n"[m
+[32m+[m[32m    "2) Registrar ingresos\n"[m
+[32m+[m[32m    "3) Consultar gastos por periodo\n"[m
+[32m+[m[32m    "4) Crear categorias personalizadas\n"[m
+[32m+[m[32m    "5) Organizar movimientos por categorias\n\n"[m
+[32m+[m[32m    "Ejemplos de mensajes:\n"[m
+[32m+[m[32m    "- 'gaste 12000 en sushi'\n"[m
+[32m+[m[32m    "- 'me pagaron 950000 de sueldo'\n"[m
+[32m+[m[32m    "- 'cuanto gaste esta semana?'\n"[m
+[32m+[m[32m    "- 'crear categoria Transporte: uber, metro, bus'\n"[m
+[32m+[m[32m    "- 'gaste 8000 en bencina (transporte)'"[m
+[32m+[m[32m)[m
+[32m+[m
+[32m+[m[32mWELCOME_MESSAGE = ([m
+[32m+[m[32m    "Hola, soy tu asistente financiero por WhatsApp. "[m
+[32m+[m[32m    "Si quieres, escribe 'que puedes hacer' y te muestro ejemplos."[m
+[32m+[m[32m)[m
+[32m+[m
+[32m+[m[32mCLARIFICATION_MESSAGE_DEFAULT = ([m
+[32m+[m[32m    "Necesito un poco mas de detalle para ayudarte. "[m
+[32m+[m[32m    "Puedes escribir monto + descripcion, por ejemplo: 'gasto 12000 en comida'."[m
+[32m+[m[32m)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _format_clp(value: float) -> str:[m
+[32m+[m[32m    rounded = int(round(value))[m
+[32m+[m[32m    return f"{rounded:,}".replace(",", ".")[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _map_category_names(categorias_usuario: list[dict]) -> dict[str, str]:[m
+[32m+[m[32m    return {[m
+[32m+[m[32m        (cat.get("id") or "").strip(): (cat.get("nombre") or "Sin categoria").strip()[m
+[32m+[m[32m        for cat in categorias_usuario[m
+[32m+[m[32m        if (cat.get("id") or "").strip()[m
+[32m+[m[32m    }[m
+[32m+[m
+ [m
+ @router.get("/webhook")[m
+ async def verify_webhook(request: Request):[m
+[31m-[m
+     params = request.query_params[m
+[31m-[m
+     mode = params.get("hub.mode")[m
+     token = params.get("hub.verify_token")[m
+     challenge = params.get("hub.challenge")[m
+[36m@@ -30,53 +79,253 @@[m [masync def verify_webhook(request: Request):[m
+ [m
+ @router.post("/webhook")[m
+ async def webhook(request: Request):[m
+[31m-[m
+     data = await request.json()[m
+[31m-[m
+     print("Webhook recibido:", data)[m
+ [m
+     try:[m
+         value = data["entry"][0]["changes"][0]["value"][m
+[31m-[m
+[31m-        # Si no es un mensaje, ignorar[m
+         if "messages" not in value:[m
+             return {"status": "evento ignorado"}[m
+ [m
+[31m-        mensaje = value["messages"][0]["text"]["body"][m
+[31m-        telefono = value["messages"][0]["from"][m
+[32m+[m[32m        msg = value["messages"][0][m
+[32m+[m[32m        if msg.get("type") != "text":[m
+[32m+[m[32m            return {"status": "mensaje no-texto ignorado"}[m
+ [m
+[32m+[m[32m        mensaje = msg["text"]["body"][m
+[32m+[m[32m        telefono = msg["from"][m
+[32m+[m[32m        contactos = value.get("contacts", [])[m
+[32m+[m[32m        display_name = None[m
+[32m+[m[32m        if contactos:[m
+[32m+[m[32m            display_name = (contactos[0].get("profile") or {}).get("name")[m
+     except Exception as e:[m
+         print("Error leyendo mensaje:", e)[m
+[31m-        return {"status": "error parsing"}[m
+[32m+[m[32m        return {"status": "error parsing webhook"}[m
+ [m
+     print("Mensaje recibido:", mensaje)[m
+ [m
+[31m-    respuesta = interpretar_gasto(mensaje)[m
+[31m-[m
+[31m-    print("Respuesta IA:", respuesta)[m
+[31m-[m
+[31m-    if respuesta["accion"] == "preguntar":[m
+[31m-        enviar_respuesta(telefono, respuesta["pregunta"])[m
+[31m-        return {"status": "pregunta enviada"}[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        user = get_or_create_user(telefono, display_name=display_name)[m
+[32m+[m[32m        user_id = user["id"][m
+[32m+[m[32m        print("Usuario resuelto para webhook:", {"telefono": telefono, "user_id": user_id})[m
+[32m+[m[32m        get_or_create_default_category(user_id)[m
+[32m+[m[32m        categorias_usuario = get_user_categories(user_id)[m
+[32m+[m[32m    except Exception as e:[m
+[32m+[m[32m        print("Error resolviendo usuario:", e)[m
+[32m+[m[32m        enviar_respuesta(telefono, "No pude identificar tu usuario. Intenta nuevamente.")[m
+[32m+[m[32m        return {"status": "error user"}[m
+ [m
+[31m-    if respuesta["accion"] == "registrar":[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        respuesta = interpretar_gasto(mensaje, categorias_usuario=categorias_usuario)[m
+[32m+[m[32m    except Exception as e:[m
+[32m+[m[32m        print("Error interpretando mensaje:", e)[m
+[32m+[m[32m        enviar_respuesta(telefono, "No pude interpretar el mensaje. Escribe algo como: 'gasto 12000 en comida'.")[m
+[32m+[m[32m        return {"status": "error parser"}[m
+ [m
+[31m-        guardar_movimiento(respuesta)[m
+[32m+[m[32m    print("Respuesta IA:", respuesta)[m
+ [m
+[31m-        mensaje_confirmacion = f"""[m
+[31m-    ✅ Movimiento registrado[m
+[32m+[m[32m    intent = (respuesta.get("intent") or "").strip().lower()[m
+[32m+[m
+[32m+[m[32m    if intent == "crear_categoria":[m
+[32m+[m[32m        nombre_categoria = (respuesta.get("categoria_nueva_nombre") or "").strip()[m
+[32m+[m[32m        descripcion_categoria = (respuesta.get("categoria_nueva_descripcion") or "").strip()[m
+[32m+[m[32m        clarification_message = (respuesta.get("clarification_message") or "").strip()[m
+[32m+[m
+[32m+[m[32m        if not nombre_categoria or not descripcion_categoria:[m
+[32m+[m[32m            reply_text = ([m
+[32m+[m[32m                clarification_message[m
+[32m+[m[32m                or "Para crear una categoria necesito nombre y descripcion. Ejemplo: 'crear categoria Transporte: uber, metro, bus'."[m
+[32m+[m[32m            )[m
+[32m+[m[32m            enviar_respuesta(telefono, reply_text)[m
+[32m+[m[32m            return {"status": "crear_categoria_falta_info"}[m
+[32m+[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            categoria_creada = create_category(user_id, nombre_categoria, descripcion_categoria)[m
+[32m+[m[32m            print("Resultado create_category:", categoria_creada)[m
+[32m+[m[32m            if categoria_creada:[m
+[32m+[m[32m                enviar_respuesta([m
+[32m+[m[32m                    telefono,[m
+[32m+[m[32m                    ([m
+[32m+[m[32m                        "Categoria creada correctamente:\n"[m
+[32m+[m[32m                        f"- Nombre: {categoria_creada.get('nombre')}\n"[m
+[32m+[m[32m                        f"- Descripcion: {categoria_creada.get('descripcion') or ''}"[m
+[32m+[m[32m                    ),[m
+[32m+[m[32m                )[m
+[32m+[m[32m                return {"status": "categoria_creada"}[m
+[32m+[m
+[32m+[m[32m            enviar_respuesta([m
+[32m+[m[32m                telefono,[m
+[32m+[m[32m                "No pude confirmar la creacion de la categoria en Supabase. Intenta nuevamente."[m
+[32m+[m[32m            )[m
+[32m+[m[32m            return {"status": "categoria_no_confirmada"}[m
+[32m+[m[32m        except Exception as e:[m
+[32m+[m[32m            print("Error creando categoria:", e)[m
+[32m+[m[32m            enviar_respuesta([m
+[32m+[m[32m                telefono,[m
+[32m+[m[32m                "Hubo un problema al crear la categoria. Revisa si ya existe y vuelve a intentarlo."[m
+[32m+[m[32m            )[m
+[32m+[m[32m            return {"status": "error_crear_categoria"}[m
+[32m+[m
+[32m+[m[32m    if intent in {"consultar_movimientos", "consultar_o_pregunta"} and (respuesta.get("periodo") or "").strip():[m
+[32m+[m[32m        periodo = (respuesta.get("periodo") or "").strip().lower()[m
+[32m+[m[32m        tipo_consulta = (respuesta.get("tipo") or "gasto").strip().lower()[m
+[32m+[m[32m        query_scope = (respuesta.get("query_scope") or "total_general").strip().lower()[m
+[32m+[m[32m        categoria_consulta = (respuesta.get("categoria_consulta") or "").strip()[m
+[32m+[m[32m        clarification_message = (respuesta.get("clarification_message") or "").strip()[m
+[32m+[m
+[32m+[m[32m        if tipo_consulta not in {"gasto", "ingreso"}:[m
+[32m+[m[32m            tipo_consulta = "gasto"[m
+[32m+[m[32m        if query_scope not in {"total_general", "total_categoria", "desglose_categorias"}:[m
+[32m+[m[32m            query_scope = "total_general"[m
+[32m+[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            fecha_inicio, fecha_fin, periodo_normalizado = resolve_period_to_range(periodo)[m
+[32m+[m[32m        except ValueError:[m
+[32m+[m[32m            enviar_respuesta([m
+[32m+[m[32m                telefono,[m
+[32m+[m[32m                clarification_message or "No reconoci ese periodo. Prueba con: hoy, esta_semana, este_mes o ultimos_7_dias."[m
+[32m+[m[32m            )[m
+[32m+[m[32m            return {"status": "consulta_periodo_invalido"}[m
+[32m+[m
+[32m+[m[32m        periodo_texto = period_label(periodo_normalizado)[m
+[32m+[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            if query_scope == "desglose_categorias":[m
+[32m+[m[32m                grouped = sum_movimientos_grouped_by_category(user_id, tipo_consulta, fecha_inicio, fecha_fin)[m
+[32m+[m[32m                grouped = [x for x in grouped if x.get("total", 0) > 0][m
+[32m+[m[32m                if not grouped:[m
+[32m+[m[32m                    noun = "gastos" if tipo_consulta == "gasto" else "ingresos"[m
+[32m+[m[32m                    enviar_respuesta(telefono, f"No encontre {noun} registrados en {periodo_texto}.")[m
+[32m+[m[32m                    return {"status": "consulta_sin_resultados"}[m
+[32m+[m
+[32m+[m[32m                names_map = _map_category_names(categorias_usuario)[m
+[32m+[m[32m                header = ([m
+[32m+[m[32m                    f"Este es tu desglose de gastos por categoria en {periodo_texto}:\n"[m
+[32m+[m[32m                    if tipo_consulta == "gasto"[m
+[32m+[m[32m                    else f"Este es tu desglose de ingresos por categoria en {periodo_texto}:\n"[m
+[32m+[m[32m                )[m
+[32m+[m[32m                lines = [][m
+[32m+[m[32m                for item in grouped:[m
+[32m+[m[32m                    cat_id = item.get("categoria_id") or ""[m
+[32m+[m[32m                    cat_name = names_map.get(cat_id, "Sin categoria")[m
+[32m+[m[32m                    total_txt = _format_clp(item.get("total", 0.0))[m
+[32m+[m[32m                    lines.append(f"- {cat_name}: ${total_txt} CLP")[m
+[32m+[m
+[32m+[m[32m                enviar_respuesta(telefono, header + "\n".join(lines))[m
+[32m+[m[32m                return {"status": "consulta_desglose_ok"}[m
+[32m+[m
+[32m+[m[32m            if query_scope == "total_categoria":[m
+[32m+[m[32m                categoria_obj = find_user_category_by_name(user_id, categoria_consulta, categorias_usuario)[m
+[32m+[m[32m                if not categoria_obj:[m
+[32m+[m[32m                    sugeridas = ", ".join([[m
+[32m+[m[32m                        (c.get("nombre") or "").strip()[m
+[32m+[m[32m                        for c in categorias_usuario[:6][m
+[32m+[m[32m                        if (c.get("nombre") or "").strip()[m
+[32m+[m[32m                    ])[m
+[32m+[m[32m                    msg = ([m
+[32m+[m[32m                        f"No encontre la categoria '{categoria_consulta}' en tus categorias."[m
+[32m+[m[32m                        + (f" Puedes usar: {sugeridas}." if sugeridas else "")[m
+[32m+[m[32m                    )[m
+[32m+[m[32m                    enviar_respuesta(telefono, msg)[m
+[32m+[m[32m                    return {"status": "consulta_categoria_no_encontrada"}[m
+[32m+[m
+[32m+[m[32m                total = sum_movimientos_by_period_and_category([m
+[32m+[m[32m                    user_id=user_id,[m
+[32m+[m[32m                    tipo=tipo_consulta,[m
+[32m+[m[32m                    fecha_inicio=fecha_inicio,[m
+[32m+[m[32m                    fecha_fin=fecha_fin,[m
+[32m+[m[32m                    categoria_id=categoria_obj["id"],[m
+[32m+[m[32m                )[m
+[32m+[m[32m                if total <= 0:[m
+[32m+[m[32m                    noun = "gastos" if tipo_consulta == "gasto" else "ingresos"[m
+[32m+[m[32m                    enviar_respuesta([m
+[32m+[m[32m                        telefono,[m
+[32m+[m[32m                        f"No encontre {noun} en {categoria_obj.get('nombre')} durante {periodo_texto}.",[m
+[32m+[m[32m                    )[m
+[32m+[m[32m                    return {"status": "consulta_sin_resultados"}[m
+[32m+[m
+[32m+[m[32m                total_txt = _format_clp(total)[m
+[32m+[m[32m                if tipo_consulta == "gasto":[m
+[32m+[m[32m                    reply_text = f"Gastaste ${total_txt} CLP en {categoria_obj.get('nombre')} durante {periodo_texto}."[m
+[32m+[m[32m                else:[m
+[32m+[m[32m                    reply_text = f"Recibiste ${total_txt} CLP en {categoria_obj.get('nombre')} durante {periodo_texto}."[m
+[32m+[m[32m                enviar_respuesta(telefono, reply_text)[m
+[32m+[m[32m                return {"status": "consulta_categoria_ok"}[m
+[32m+[m
+[32m+[m[32m            total = sum_movimientos_by_period(user_id, tipo_consulta, fecha_inicio, fecha_fin)[m
+[32m+[m[32m            if total <= 0:[m
+[32m+[m[32m                noun = "gastos" if tipo_consulta == "gasto" else "ingres
