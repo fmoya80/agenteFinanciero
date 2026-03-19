@@ -2,5 +2,7 @@ fastapi
 uvicorn
 python-dotenv
 supabase
+streamlit
+pandas
 openai
 requests

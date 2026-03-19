@@ -1,10 +1,31 @@
-from supabase import create_client
 import os
 
-url = os.getenv("SUPABASE_URL")
-key = os.getenv("SUPABASE_KEY")
+from dotenv import load_dotenv
+from supabase import Client, create_client
 
-if not url or not key:
-    raise RuntimeError("Faltan SUPABASE_URL o SUPABASE_KEY en variables de entorno.")
 
-supabase = create_client(url, key)
+load_dotenv()
+
+
+def get_supabase_url() -> str:
+    return os.getenv("SUPABASE_URL", "").strip()
+
+
+def get_supabase_anon_key() -> str:
+    return (os.getenv("SUPABASE_ANON_KEY", "").strip() or os.getenv("SUPABASE_KEY", "").strip())
+
+
+def get_supabase_client(url: str | None = None, key: str | None = None) -> Client:
+    url = (url or get_supabase_url()).strip()
+    key = (key or get_supabase_anon_key()).strip()
+
+    if not url:
+        raise RuntimeError("Falta SUPABASE_URL en el archivo .env.")
+
+    if not key:
+        raise RuntimeError("Falta SUPABASE_ANON_KEY en el archivo .env.")
+
+    return create_client(url, key)
+
+
+supabase = get_supabase_client()
