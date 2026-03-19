@@ -7,3 +7,4 @@ __pycache__/
 dev_commands_local.md
 .ngrok/
 .vscode/
+.streamlit/secrets.toml
