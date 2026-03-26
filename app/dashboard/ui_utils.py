@@ -1,5 +1,5 @@
 def format_currency(value: float) -> str:
-    return f"${value:,.0f}".replace(",", ".")
+    return f"$ {value:,.0f}".replace(",", ".")
 
 
 def format_delta(value: float) -> str:
